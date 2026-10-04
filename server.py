@@ -41,13 +41,16 @@ async def broadcast(room, msg):
         await send(p["ws"], msg)
 
 
-def lobby(room):
-    return {
-        "t": "lobby",
-        "code": room["code"],
-        "started": room["started"],
-        "players": [{"name": p["name"], "color": p["color"]} for p in room["players"]],
-    }
+def plist(room):
+    return [{"name": p["name"], "color": p["color"]} for p in room["players"]]
+
+
+async def broadcast_lobby(room):
+    for i, p in enumerate(room["players"]):
+        await send(p["ws"], {
+            "t": "lobby", "code": room["code"], "started": room["started"],
+            "you": i, "players": plist(room),
+        })
 
 
 async def handle_ws(request):
@@ -71,7 +74,7 @@ async def handle_ws(request):
             room = {"code": code, "players": [me], "started": False,
                     "current": 0, "rolling": False}
             rooms[code] = room
-            await send(ws, lobby(room))
+            await broadcast_lobby(room)
 
         elif t == "join" and room is None:
             code = str(data.get("code", "")).upper().strip()
@@ -88,7 +91,7 @@ async def handle_ws(request):
                 me = {"ws": ws, "name": clean_name(data.get("name"), f"Player {n}"),
                       "color": free_color(room)}
                 room["players"].append(me)
-                await broadcast(room, lobby(room))
+                await broadcast_lobby(room)
 
         elif room is None:
             continue
@@ -97,18 +100,17 @@ async def handle_ws(request):
             c = data.get("color")
             if c in (0, 1, 2, 3) and all(p["color"] != c for p in room["players"]):
                 me["color"] = c
-                await broadcast(room, lobby(room))
+                await broadcast_lobby(room)
 
         elif t == "start":
             if room["players"][0] is me and not room["started"] and len(room["players"]) >= 2:
                 room["started"] = True
                 room["current"] = 0
                 room["rolling"] = False
-                await broadcast(room, {
-                    "t": "start",
-                    "seed": random.randrange(1 << 30),
-                    "players": [{"name": p["name"], "color": p["color"]} for p in room["players"]],
-                })
+                seed = random.randrange(1 << 30)
+                for i, p in enumerate(room["players"]):
+                    await send(p["ws"], {"t": "start", "seed": seed, "you": i,
+                                         "players": plist(room)})
 
         elif t == "roll":
             idx = room["players"].index(me)
@@ -128,7 +130,7 @@ async def handle_ws(request):
             if room["started"] and room["current"] == idx:
                 room["started"] = False
                 await broadcast(room, {"t": "over", "i": idx})
-                await broadcast(room, lobby(room))
+                await broadcast_lobby(room)
 
     # disconnect cleanup
     if room is not None and me in room["players"]:
@@ -139,7 +141,7 @@ async def handle_ws(request):
             if room["started"]:
                 room["started"] = False
                 await broadcast(room, {"t": "abort", "name": me["name"]})
-            await broadcast(room, lobby(room))
+            await broadcast_lobby(room)
     return ws
 
 
